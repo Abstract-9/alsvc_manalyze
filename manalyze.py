@@ -1,11 +1,15 @@
 from assemblyline.al.service.base import ServiceBase
-from assemblyline.al.common.result import Result, ResultSection, SCORE, TEXT_FORMAT
+from assemblyline.al.common.result import Result, ResultSection, SCORE, TEXT_FORMAT, TAG_WEIGHT, TAG_TYPE
 from assemblyline.common.reaper import set_death_signal
+from assemblyline.common.net import is_valid_domain, is_valid_email, is_valid_ip
 
 
 import os
 import subprocess
 import json
+
+
+
 
 class Manalyze(ServiceBase):
     SERVICE_CATEGORY = 'Static Analysis'
@@ -33,8 +37,12 @@ class Manalyze(ServiceBase):
         "Virustotal": False
     }
 
+    #Heuristics
+
+
     def __init__(self, cfg=None):
         super(Manalyze, self).__init__(cfg)
+        self.result = None
 
     def start(self):
         self.log.debug("Manalyze service started")
@@ -43,6 +51,7 @@ class Manalyze(ServiceBase):
 
     def execute(self, request):
         local = request.download()
+        self.result = request.result
 
         #Start construction of CLI string
         local_dir = os.path.dirname(os.path.realpath(__file__)) + '/Manalyze/bin'
@@ -61,13 +70,6 @@ class Manalyze(ServiceBase):
             result_section.add_line("JSON Decoding Failed!")
             raise
 
-        # result_section = ResultSection(SCORE.NULL, 'Output Section')
-        # result_section.add_line(subprocess.check_output(cmdLine))
-
-        # test_section = ResultSection(SCORE.NULL, 'Test Section')
-        # test_section.add_line(cmdLine)
-        # test_section.add_line(os.getcwd())
-
         result = Result()
         result.add_section(result_section)
         # result.add_section(test_section)
@@ -77,10 +79,12 @@ class Manalyze(ServiceBase):
         data = json.loads(str(output))
         parent_section = ResultSection(SCORE.NULL, "Manalyze Results:")
         for name, level2 in data.iteritems():
-            #Skip the first level (Its the filename)
+            # Skip the first level (Its the filename)
             for key, value in level2.iteritems():
                 section = ResultSection(SCORE.NULL, key)
                 self.recurse_dict(value, section)
+
+                if len(section.items()) > 25: section.body_format = TEXT_FORMAT.MEMORY_DUMP
                 parent_section.add_section(section)
 
         return parent_section
@@ -92,25 +96,33 @@ class Manalyze(ServiceBase):
                 self.recurse_dict(value, section)
                 parent_section.add_section(section)
 
-
             elif isinstance(value, list):
                 parent_section.add_line(key + ":")
                 parent_section.add_lines(value)
 
             else:
 
-                if key=='level':
-                    if(value==1): parent_section.change_score(SCORE.INFO)
-                    elif(value==2): parent_section.change_score(SCORE.MED)
-                    elif(value==3): parent_section.change_score(SCORE.HIGH)
+                while True:
+                    retry = False
+                    try:
+                        if key in self.indicator_keys:
+                            func = self.indicator_keys.get(key)
+                            func(self, value, parent_section)
 
-                else:
+                        elif isinstance(value, int):
+                            parent_section.add_line(key + ": " + str(value) + " (" + str(hex(value)) + ")")
 
-                    if(isinstance(value, int)):
-                        parent_section.add_line(key + ": " + str(value) + " (0x" + str(hex(value)) + ")")
+                        else:
+                            self.tag_analyze(value, parent_section)
+                            parent_section.add_line(key + ": " + str(value))
+                    except (UnicodeDecodeError, UnicodeEncodeError) as e:
+                        if retry: break
+                        value = value.encode("ascii", "ignore")
+                        retry = True
+                        self.log.debug(str(e) + "\n----Retrying...----")
+                        continue
+                    break
 
-                    else:
-                        parent_section.add_line(key + ": " + str(value))
 
     def construct_plugins(self, cmd_line):
         cmd_line.append('-p')
@@ -126,3 +138,31 @@ class Manalyze(ServiceBase):
         else: cmd_line.pop()
 
         return cmd_line
+
+    def tag_analyze(self, value, section):
+        if is_valid_ip(value):
+            section.add_tag(TAG_TYPE["NET_IP"], value, TAG_WEIGHT.LOW)
+
+        if is_valid_email(value):
+            section.add_tag(TAG_TYPE["NET_EMAIL"], value, TAG_WEIGHT.LOW)
+
+        if is_valid_domain(value):
+            section.add_tag(TAG_TYPE["NET_DOMAIN"], value, TAG_WEIGHT.LOW)
+
+    def level_score(self, value, parent_section):
+
+        if value == 1:
+            parent_section.change_score(SCORE.INFO)
+        elif value == 2:
+            parent_section.change_score(SCORE.MED)
+        elif value == 3:
+            parent_section.change_score(SCORE.HIGH)
+
+    def entropy_score(self, value, parent_section):
+        if value > 7.5:
+            parent_section.add_section(ResultSection(SCORE.HIGH, "Section has high entropy!"))
+
+    indicator_keys = {
+        'level': level_score,
+        'entropy': entropy_score
+    }
