@@ -84,7 +84,7 @@ class Manalyze(ServiceBase):
                 section = ResultSection(SCORE.NULL, key)
                 self.recurse_dict(value, section)
 
-                if len(section.items()) > 25: section.body_format = TEXT_FORMAT.MEMORY_DUMP
+                if section.body.count("\n") > 25: section.body_format = TEXT_FORMAT.MEMORY_DUMP
                 parent_section.add_section(section)
 
         return parent_section
@@ -113,7 +113,7 @@ class Manalyze(ServiceBase):
                             parent_section.add_line(key + ": " + str(value) + " (" + str(hex(value)) + ")")
 
                         else:
-                            self.tag_analyze(value, parent_section)
+                            if isinstance(value, str): self.tag_analyze(value, parent_section)
                             parent_section.add_line(key + ": " + str(value))
                     except (UnicodeDecodeError, UnicodeEncodeError) as e:
                         if retry: break
@@ -154,7 +154,7 @@ class Manalyze(ServiceBase):
         if value == 1:
             parent_section.change_score(SCORE.INFO)
         elif value == 2:
-            parent_section.change_score(SCORE.MED)
+            parent_section.change_score(SCORE.LOW)
         elif value == 3:
             parent_section.change_score(SCORE.HIGH)
 
